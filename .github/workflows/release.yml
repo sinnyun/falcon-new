@@ -3,24 +3,95 @@ name: Release (Windows)
 on:
   push:
     tags:
-      - 'v*'
+      - 'v*' # 仅在推送 v 开头的 tag 时触发
+
+permissions:
+  contents: write
 
 jobs:
   build-windows:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
 
-      - name: Build Windows
+      # ==========================================
+      # 1. 自动魔改代码：绕过 Unix 专属 API 报错
+      # ==========================================
+      - name: Patch Unix-specific code
+        shell: pwsh
+        run: |
+          $file = "crates/falcon-ffmpeg/src/decode.rs"
+          if (Test-Path $file) {
+            # 注释掉 std::os::unix 引用
+            (Get-Content $file) -replace 'use std::os::unix::ffi::OsStrExt;', '// use std::os::unix::ffi::OsStrExt;' | Set-Content $file
+            # 替换 as_bytes 方法，兼容 Windows
+            (Get-Content $file) -replace 'bytes.extend_from_slice\(path.as_os_str\(\).as_bytes\(\)\);', 'bytes.extend_from_slice(path.as_os_str().to_string_lossy().as_bytes());' | Set-Content $file
+            Write-Host "Code patched for Windows successfully."
+          } else {
+            Write-Host "decode.rs not found, skipping patch."
+          }
+
+      # ==========================================
+      # 2. 自动规避 falcon-pdf 模块
+      # ==========================================
+      - name: Disable falcon-pdf in Cargo.toml
+        shell: pwsh
+        run: |
+          $toml = "Cargo.toml"
+          if (Test-Path $toml) {
+            # 移除工作区中的 falcon-pdf
+            (Get-Content $toml) -replace '(?m)^\s*"crates/falcon-pdf",?.*$', '' | Set-Content $toml
+            # 如果有 [dependencies] 下的引用，将其注释掉
+            (Get-Content $toml) -replace '(?m)^falcon-pdf\s*=.*$', '# falcon-pdf disabled for Windows CI' | Set-Content $toml
+            Write-Host "falcon-pdf disabled."
+          }
+
+      # ==========================================
+      # 3. 自动配置 Windows FFmpeg 依赖
+      # ==========================================
+      - name: Setup FFmpeg on Windows
+        shell: pwsh
+        run: |
+          # 下载静态版的 FFmpeg Windows 构建包
+          Write-Host "Downloading FFmpeg..."
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full-shared.7z" -OutFile "ffmpeg.7z"
+          
+          # 使用 7z 解压 (Windows Runner 自带 7z)
+          Write-Host "Extracting FFmpeg..."
+          7z x ffmpeg.7z -o"C:\ffmpeg" -y | Out-Null
+          
+          # 找到解压后的实际目录并配置环境变量
+          $ffmpegDir = (Get-ChildItem -Path "C:\ffmpeg" -Directory | Select-Object -First 1).FullName
+          echo "FFMPEG_DIR=$ffmpegDir" >> $env:GITHUB_ENV
+          echo "$ffmpegDir\bin" >> $env:GITHUB_PATH
+          Write-Host "FFmpeg configured at $ffmpegDir"
+
+      # ==========================================
+      # 4. 编译并打包
+      # ==========================================
+      - name: Build Release
         run: cargo build --release
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      # 如果你需要把资源文件、dll 等打包到一起，可以在这里加自定义打包命令
+      # - name: Package
+      #   run: ...
+
+      # ==========================================
+      # 5. 自动发布到 Release
+      # ==========================================
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: windows
-          path: target/release/*.exe
+          files: |
+            target/release/*.exe
+            # 如果有依赖的 dll，也可以写在这里，例如：target/release/*.dll
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
