@@ -1,0 +1,35 @@
+name: Build Windows App
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch: # 允许手动在 GitHub 页面点击触发构建
+
+jobs:
+  build:
+    name: Build for Windows
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 1.89.0 # 匹配项目要求的最低 Rust 版本
+
+    - name: Rust Cache
+      uses: swatinem/rust-cache@v2
+
+    - name: Build falcon-app
+      run: |
+        cargo build --release -p falcon-app
+
+    - name: Upload Artifact
+      uses: actions/artifacts/upload-artifact@v4
+      with:
+        name: Falcon-Windows-x64
+        path: target/release/falcon-app.exe
